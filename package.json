@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "CORS proxy for Roblox API",
   "main": "server.js",
+  "license": "MIT",
   "scripts": {
     "start": "node server.js"
   },
