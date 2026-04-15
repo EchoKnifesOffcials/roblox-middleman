@@ -1,9 +1,8 @@
 {
-  "name": "roblox-middleman",
-  "version": "2.0.0",
-  "description": "Roblox API proxy for ECHOKNIVES shop",
+  "name": "echoknives-payment",
+  "version": "1.0.0",
+  "description": "Payment gateway for ECHOKNIVES MM2 Shop",
   "main": "server.js",
-  "license": "MIT",
   "scripts": {
     "start": "node server.js"
   },
