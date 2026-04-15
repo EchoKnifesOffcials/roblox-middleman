@@ -1,7 +1,7 @@
 {
   "name": "echoknives-payment",
   "version": "1.0.0",
-  "description": "Payment gateway for ECHOKNIVES MM2 Shop",
+  "description": "Payment gateway for ECHOKNIVES MM2 Shop - Linked to shop site",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
