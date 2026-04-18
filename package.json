@@ -1,7 +1,7 @@
 {
   "name": "roblox-middleman",
-  "version": "2.1.0",
-  "description": "Roblox API proxy for ECHOKNIVES - Fast avatar & profile lookup",
+  "version": "2.2.0",
+  "description": "Roblox API proxy for ECHOKNIVES - With Bio Verification",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
