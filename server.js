@@ -5,61 +5,32 @@ const NodeCache = require('node-cache');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ============ CACHE SETUP ============
-// Cache user data for 1 hour to reduce API calls (faster responses)
+// Cache setup
 const userCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
 const avatarCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
+const bioCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // 5 min cache for bios
 
-// ============ MIDDLEWARE ============
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type']
-}));
+// Middleware
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type'] }));
 app.use(express.json());
 
-// Request logging middleware
-app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-    next();
-});
-
-// ============ HELPER FUNCTIONS ============
-
-// Rate limiting tracker
+// Rate limiting
 const rateLimit = new Map();
-
 function checkRateLimit(ip) {
     const now = Date.now();
-    const windowMs = 60000; // 1 minute
-    const maxRequests = 30; // 30 requests per minute
-    
-    if (!rateLimit.has(ip)) {
-        rateLimit.set(ip, []);
-    }
-    
-    const timestamps = rateLimit.get(ip).filter(t => now - t < windowMs);
-    timestamps.push(now);
-    rateLimit.set(ip, timestamps);
-    
-    return timestamps.length <= maxRequests;
+    const timestamps = rateLimit.get(ip) || [];
+    const valid = timestamps.filter(t => now - t < 60000);
+    valid.push(now);
+    rateLimit.set(ip, valid);
+    return valid.length <= 30;
 }
 
-// Fast parallel requests
-async function fetchWithTimeout(url, options = {}, timeout = 5000) {
+// Helper: Fetch with timeout
+async function fetchWithTimeout(url, options = {}, timeout = 8000) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
-    
     try {
-        const response = await fetch(url, {
-            ...options,
-            signal: controller.signal,
-            headers: {
-                'User-Agent': 'Roblox-Middleman/2.0',
-                'Accept': 'application/json',
-                ...options.headers
-            }
-        });
+        const response = await fetch(url, { ...options, signal: controller.signal, headers: { 'User-Agent': 'Roblox-Middleman/2.0', ...options.headers } });
         clearTimeout(timeoutId);
         return response;
     } catch (error) {
@@ -68,74 +39,44 @@ async function fetchWithTimeout(url, options = {}, timeout = 5000) {
     }
 }
 
-// Get user ID from username (with caching)
-async function getUserId(username) {
-    // Check cache first
-    const cacheKey = `userid_${username.toLowerCase()}`;
+// Get user info by username
+async function getUserInfo(username) {
+    const cacheKey = `user_${username.toLowerCase()}`;
     const cached = userCache.get(cacheKey);
-    if (cached) {
-        console.log(`[CACHE HIT] User ID for ${username}: ${cached.userId}`);
-        return cached;
-    }
+    if (cached) return cached;
     
     try {
         const response = await fetchWithTimeout('https://users.roblox.com/v1/usernames/users', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ usernames: [username], excludeBannedUsers: true })
-        }, 8000);
-        
+        });
         const data = await response.json();
-        
-        if (!data.data || data.data.length === 0) {
-            return null;
-        }
+        if (!data.data || data.data.length === 0) return null;
         
         const user = data.data[0];
-        const result = {
-            userId: user.id,
-            username: user.name,
-            displayName: user.displayName
-        };
-        
-        // Cache the result
+        const result = { userId: user.id, username: user.name, displayName: user.displayName };
         userCache.set(cacheKey, result);
-        
         return result;
     } catch (error) {
-        console.error(`Error fetching user ID for ${username}:`, error.message);
+        console.error(`Error getting user info for ${username}:`, error.message);
         return null;
     }
 }
 
-// Get avatar URL (with caching)
-async function getAvatarUrl(userId) {
-    const cacheKey = `avatar_${userId}`;
+// Get user avatar (full body)
+async function getUserAvatarFull(userId) {
+    const cacheKey = `avatar_full_${userId}`;
     const cached = avatarCache.get(cacheKey);
-    if (cached) {
-        return cached;
-    }
+    if (cached) return cached;
     
     try {
-        // Use multiple sizes for better compatibility
-        const response = await fetchWithTimeout(
-            `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=true`,
-            {},
-            5000
-        );
-        
+        const response = await fetchWithTimeout(`https://thumbnails.roblox.com/v1/users/avatar?userIds=${userId}&size=420x420&format=Png&isCircular=false`, {}, 5000);
         const data = await response.json();
-        
         let avatarUrl = null;
         if (data.data && data.data.length > 0 && data.data[0].imageUrl) {
             avatarUrl = data.data[0].imageUrl;
         }
-        
-        // Cache the avatar URL
-        if (avatarUrl) {
-            avatarCache.set(cacheKey, avatarUrl);
-        }
-        
+        if (avatarUrl) avatarCache.set(cacheKey, avatarUrl);
         return avatarUrl;
     } catch (error) {
         console.error(`Error fetching avatar for ${userId}:`, error.message);
@@ -143,169 +84,171 @@ async function getAvatarUrl(userId) {
     }
 }
 
+// Get user's bio/description
+async function getUserBio(userId) {
+    const cacheKey = `bio_${userId}`;
+    const cached = bioCache.get(cacheKey);
+    if (cached) return cached;
+    
+    try {
+        const response = await fetchWithTimeout(`https://users.roblox.com/v1/users/${userId}`, {}, 5000);
+        const data = await response.json();
+        const bio = data.description || "";
+        bioCache.set(cacheKey, bio);
+        return bio;
+    } catch (error) {
+        console.error(`Error fetching bio for ${userId}:`, error.message);
+        return "";
+    }
+}
+
+// Generate verification code
+function generateVerificationCode(username) {
+    const timestamp = Date.now();
+    const hash = Buffer.from(`${username}-${timestamp}-ECHOKNIVES`).toString('base64').substring(0, 16);
+    return `ECHOKNIVES-${hash}`;
+}
+
 // ============ API ENDPOINTS ============
 
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        message: 'Roblox Middleman is running',
-        timestamp: new Date().toISOString(),
-        cacheStats: {
-            userCacheSize: userCache.keys().length,
-            avatarCacheSize: avatarCache.keys().length
-        }
-    });
+    res.json({ status: 'ok', message: 'Roblox Middleman is running', timestamp: new Date().toISOString() });
 });
 
-// Clear cache endpoint (admin only - add your admin key)
-app.post('/api/clear-cache', (req, res) => {
-    const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== 'echoknives_admin_2024') {
-        return res.status(403).json({ error: 'Unauthorized' });
-    }
-    
-    userCache.flushAll();
-    avatarCache.flushAll();
-    res.json({ success: true, message: 'Cache cleared' });
-});
-
-// Main API: Get Roblox user data and avatar (OPTIMIZED)
+// Get user by username (basic info)
 app.get('/api/roblox/:username', async (req, res) => {
     const username = req.params.username;
-    const clientIp = req.ip || req.connection.remoteAddress;
-    
-    // Validate input
     if (!username || username.trim().length < 1) {
         return res.status(400).json({ success: false, error: 'Username required' });
     }
-    
-    // Rate limiting
-    if (!checkRateLimit(clientIp)) {
-        return res.status(429).json({ success: false, error: 'Too many requests. Please wait a moment.' });
+    if (!checkRateLimit(req.ip)) {
+        return res.status(429).json({ success: false, error: 'Too many requests' });
     }
     
-    console.log(`[REQUEST] Looking up: ${username}`);
-    
     try {
-        // Step 1: Get user ID (with cache)
-        const userInfo = await getUserId(username.trim());
+        const userInfo = await getUserInfo(username.trim());
+        if (!userInfo) return res.status(404).json({ success: false, error: 'User not found' });
         
-        if (!userInfo) {
-            console.log(`[NOT FOUND] ${username}`);
-            return res.status(404).json({ success: false, error: 'User not found' });
-        }
+        const avatarUrl = await getUserAvatarFull(userInfo.userId);
+        const bio = await getUserBio(userInfo.userId);
         
-        console.log(`[FOUND] ${userInfo.username} (ID: ${userInfo.userId})`);
-        
-        // Step 2: Get avatar URL (with cache) - runs in parallel with any future requests
-        const avatarUrl = await getAvatarUrl(userInfo.userId);
-        
-        // Step 3: Return combined data
-        const responseData = {
+        res.json({
             success: true,
             username: userInfo.username,
             displayName: userInfo.displayName,
             userId: userInfo.userId,
-            avatarUrl: avatarUrl || 'https://www.roblox.com/headshot-thumbnail/avatar?userId=' + userInfo.userId,
-            profileUrl: `https://www.roblox.com/users/${userInfo.userId}/profile`,
-            cached: userCache.get(`userid_${username.toLowerCase()}`) !== undefined
-        };
-        
-        res.json(responseData);
-        
-    } catch (error) {
-        console.error(`[ERROR] ${username}: ${error.message}`);
-        res.status(500).json({ success: false, error: 'Server error: ' + error.message });
-    }
-});
-
-// Batch lookup - get multiple users at once (FASTER for multiple lookups)
-app.post('/api/roblox/batch', async (req, res) => {
-    const { usernames } = req.body;
-    
-    if (!usernames || !Array.isArray(usernames) || usernames.length === 0) {
-        return res.status(400).json({ success: false, error: 'Array of usernames required' });
-    }
-    
-    if (usernames.length > 10) {
-        return res.status(400).json({ success: false, error: 'Maximum 10 usernames per batch' });
-    }
-    
-    try {
-        const results = await Promise.all(
-            usernames.map(async (username) => {
-                const userInfo = await getUserId(username);
-                if (!userInfo) return null;
-                
-                const avatarUrl = await getAvatarUrl(userInfo.userId);
-                return {
-                    username: userInfo.username,
-                    displayName: userInfo.displayName,
-                    userId: userInfo.userId,
-                    avatarUrl: avatarUrl,
-                    profileUrl: `https://www.roblox.com/users/${userInfo.userId}/profile`
-                };
-            })
-        );
-        
-        res.json({ success: true, users: results.filter(r => r !== null) });
+            avatarUrl: avatarUrl,
+            bio: bio,
+            profileUrl: `https://www.roblox.com/users/${userInfo.userId}/profile`
+        });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Cache stats endpoint
-app.get('/api/cache-stats', (req, res) => {
-    res.json({
-        userCache: {
-            size: userCache.keys().length,
-            keys: userCache.keys()
-        },
-        avatarCache: {
-            size: avatarCache.keys().length,
-            keys: avatarCache.keys()
+// Generate verification code for a user
+app.post('/api/generate-verification', async (req, res) => {
+    const { username } = req.body;
+    if (!username) return res.status(400).json({ success: false, error: 'Username required' });
+    
+    try {
+        const userInfo = await getUserInfo(username);
+        if (!userInfo) return res.status(404).json({ success: false, error: 'User not found' });
+        
+        const verificationCode = generateVerificationCode(username);
+        const instructions = `Please add this code to your Roblox profile description/bio:\n\n"${verificationCode}"\n\nThen click Verify.`;
+        
+        res.json({
+            success: true,
+            userId: userInfo.userId,
+            username: userInfo.username,
+            verificationCode: verificationCode,
+            instructions: instructions
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Verify if user has the code in their bio
+app.post('/api/verify-bio', async (req, res) => {
+    const { username, verificationCode } = req.body;
+    if (!username || !verificationCode) {
+        return res.status(400).json({ success: false, error: 'Username and verification code required' });
+    }
+    
+    try {
+        const userInfo = await getUserInfo(username);
+        if (!userInfo) return res.status(404).json({ success: false, error: 'User not found' });
+        
+        const bio = await getUserBio(userInfo.userId);
+        const hasCode = bio.includes(verificationCode);
+        
+        if (hasCode) {
+            // Clear cache for this user's bio to force refresh next time
+            bioCache.del(`bio_${userInfo.userId}`);
+            res.json({ success: true, verified: true, message: 'Verification successful!' });
+        } else {
+            res.json({ success: true, verified: false, message: 'Verification code not found in bio. Please add the code to your Roblox profile description.' });
         }
-    });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Get full user details with avatar and bio (for verification popup)
+app.get('/api/user-full/:username', async (req, res) => {
+    const username = req.params.username;
+    if (!username) return res.status(400).json({ success: false, error: 'Username required' });
+    
+    try {
+        const userInfo = await getUserInfo(username);
+        if (!userInfo) return res.status(404).json({ success: false, error: 'User not found' });
+        
+        const [avatarUrl, bio] = await Promise.all([
+            getUserAvatarFull(userInfo.userId),
+            getUserBio(userInfo.userId)
+        ]);
+        
+        res.json({
+            success: true,
+            username: userInfo.username,
+            displayName: userInfo.displayName,
+            userId: userInfo.userId,
+            avatarUrl: avatarUrl,
+            bio: bio,
+            profileUrl: `https://www.roblox.com/users/${userInfo.userId}/profile`
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 // Root endpoint
 app.get('/', (req, res) => {
-    res.json({ 
-        status: 'alive', 
+    res.json({
+        status: 'alive',
         name: 'ECHOKNIVES Roblox Middleman',
-        version: '2.1.0',
-        features: {
-            caching: true,
-            rateLimiting: true,
-            batchLookup: true
-        },
+        version: '2.2.0',
         endpoints: {
             'GET /health': 'Check server status',
-            'GET /api/roblox/:username': 'Get single user info (cached)',
-            'POST /api/roblox/batch': 'Get multiple users at once',
-            'GET /api/cache-stats': 'View cache statistics',
-            'POST /api/clear-cache': 'Clear cache (admin only)'
+            'GET /api/roblox/:username': 'Get basic user info',
+            'GET /api/user-full/:username': 'Get full user info with avatar',
+            'POST /api/generate-verification': 'Generate verification code',
+            'POST /api/verify-bio': 'Verify bio contains code'
         }
     });
 });
 
-// Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`
     ╔══════════════════════════════════════════════════════════════════╗
-    ║     🚀 ECHOKNIVES ROBLOX MIDDLEMAN - OPTIMIZED VERSION 2.1       ║
+    ║     🚀 ECHOKNIVES ROBLOX MIDDLEMAN - BIO VERIFICATION v2.2      ║
     ╠══════════════════════════════════════════════════════════════════╣
     ║  ✅ Port: ${PORT}                                                      ║
-    ║  ⚡ Caching: ENABLED (1 hour TTL)                                   ║
-    ║  🔒 Rate Limiting: 30 req/min                                       ║
-    ║  📦 Batch Lookup: UP TO 10 users                                    ║
-    ║                                                                     ║
-    ║  📱 Test single: /api/roblox/Builderman                            ║
-    ║  📱 Test batch:  POST /api/roblox/batch                             ║
-    ║                                                                     ║
-    ║  💡 First request may take ~1-2 seconds                            ║
-    ║  💡 Subsequent requests are INSTANT (cached)                       ║
+    ║  🔒 Bio Verification: ENABLED                                      ║
+    ║  💾 Caching: 1 hour for users, 5 min for bios                     ║
     ╚══════════════════════════════════════════════════════════════════╝
     `);
 });
